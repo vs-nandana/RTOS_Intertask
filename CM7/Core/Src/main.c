@@ -108,7 +108,10 @@ const osSemaphoreAttr_t uartRxSem_attributes = {
   .name = "uartRxSem"
 };
 /* USER CODE BEGIN PV */
-uint8_t rxChar;
+uint8_t rxChar;                   // single byte DMA register
+char    rxBuff[20];                // assembled string
+uint8_t rxIndex = 0;
+
 
 Command_t lastCommand = CMD_LED_OFF;
 Command_t currentLEDState = CMD_LED_OFF;
@@ -418,11 +421,37 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
     if(huart->Instance == USART3)
     {
-        // Release semaphore to wake up the UserInput task
-        osSemaphoreRelease(uartRxSemHandle);
+        if(rxChar == '\n' || rxChar == '\r')
+        {
+            if(rxIndex > 0)  // ignore empty lines
+            {
+                rxBuff[rxIndex] = '\0';  // null terminate the string
+                rxIndex = 0;             // reset for next string
+
+                // Release semaphore to wake up the UserInput task
+                osSemaphoreRelease(uartRxSemHandle);
+            }
+        }
+
+        else
+         {
+             // Append char to buffer, guard against overflow
+             if(rxIndex < sizeof(rxBuff) - 1)
+             {
+                 rxBuff[rxIndex++] = rxChar;
+             }
+             else
+             {
+                 // Buffer overflow — reset and discard
+                 rxIndex = 0;
+                 memset(rxBuff, 0, sizeof(rxBuff));
+             }
+         }
+
 
         // Re-arm for next byte
         HAL_UART_Receive_IT(&huart3, &rxChar, 1);
+
     }
 }
 /* USER CODE END 4 */
@@ -455,18 +484,15 @@ void StartDefaultTask(void *argument)
 void StartUserInput(void *argument)
 {
   /* USER CODE BEGIN StartUserInput */
-//    char rxBuffer[20];
     Command_t cmd;
   /* Infinite loop */
   for(;;)
   {
-//	  memset(rxBuffer,0,sizeof(rxBuffer));
+
 
       	  	  UART_Print("Enter the command\r\n");
       		  osSemaphoreAcquire(uartRxSemHandle, osWaitForever);
-//	          HAL_UART_Receive(&huart3,(uint8_t*)rxBuffer,sizeof(rxBuffer),HAL_MAX_DELAY);
-//	          UART_Print("Bug1\r\n");
-
+/*
       		  switch(rxChar){
 
               case 'O': cmd = CMD_LED_ON;    break;
@@ -476,23 +502,25 @@ void StartUserInput(void *argument)
               default:  UART_Print("Error\r\n"); continue;
 
       		  }
+*/
 
-//	          if(strncmp(rxBuffer,"O",1)==0){
-//	              cmd = CMD_LED_ON;
-//	              UART_Print("ON\r\n");
-//	          }
-//
-//	          else if(strncmp(rxBuffer,"F",1)==0)
-//	              cmd = CMD_LED_OFF;
-//
-//	          else if(strncmp(rxBuffer,"S",1)==0)
-//	              cmd = CMD_SLOW_BLINK;
-//
-//	          else if(strncmp(rxBuffer,"T",1)==0)
-//	              cmd = CMD_FAST_BLINK;
-//
-//	          else
-//	              continue;
+	          if(strncmp(rxBuff,"ON",2)==0){
+	              cmd = CMD_LED_ON;
+	          }
+
+	          else if(strncmp(rxBuff,"OFF",3)==0)
+	              cmd = CMD_LED_OFF;
+
+	          else if(strncmp(rxBuff,"SLOW",4)==0)
+	              cmd = CMD_SLOW_BLINK;
+
+	          else if(strncmp(rxBuff,"FAST",4)==0)
+	              cmd = CMD_FAST_BLINK;
+
+	          else{
+	        	  UART_Print("Error\r\n");
+	              continue;
+	          }
 	          osMessageQueuePut(ConsoleQueueHandle, &cmd, 0, osWaitForever);
 	          osMessageQueuePut(LEDQueueHandle, &cmd, 0, osWaitForever);
   }
