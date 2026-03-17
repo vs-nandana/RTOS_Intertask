@@ -25,17 +25,12 @@
 #include "FreeRTOS.h"
 #include "string.h"
 #include "stdio.h"
+#include "myBuffer.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
-typedef enum
-{
-    CMD_LED_ON = 0,
-    CMD_LED_OFF,
-    CMD_SLOW_BLINK,
-    CMD_FAST_BLINK
-} Command_t;
+
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -82,15 +77,15 @@ const osThreadAttr_t UserInput_attributes = {
 osThreadId_t ConsoleHandle;
 const osThreadAttr_t Console_attributes = {
   .name = "Console",
-  .stack_size = 128 * 4,
-  .priority = (osPriority_t) osPriorityLow,
+  .stack_size = 512 * 4,
+  .priority = (osPriority_t) osPriorityNormal2,
 };
 /* Definitions for LED */
 osThreadId_t LEDHandle;
 const osThreadAttr_t LED_attributes = {
   .name = "LED",
   .stack_size = 128 * 4,
-  .priority = (osPriority_t) osPriorityLow,
+  .priority = (osPriority_t) osPriorityNormal3,
 };
 /* Definitions for ConsoleQueue */
 osMessageQueueId_t ConsoleQueueHandle;
@@ -108,15 +103,16 @@ const osSemaphoreAttr_t uartRxSem_attributes = {
   .name = "uartRxSem"
 };
 /* USER CODE BEGIN PV */
+/*
 uint8_t rxChar;                   // single byte DMA register
 char    rxBuff[20];                // assembled string
 uint8_t rxIndex = 0;
+*/
 
 
-Command_t lastCommand = CMD_LED_OFF;
-Command_t currentLEDState = CMD_LED_OFF;
 
 uint32_t blinkDelay = 0;
+volatile uint8_t systemReady = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -139,6 +135,8 @@ void UART_Print(char *msg)
     HAL_UART_Transmit(&huart3, (uint8_t*)msg, strlen(msg), HAL_MAX_DELAY);
 }
 
+Command_t lastCommand = CMD_STARTUP;
+Command_t currentLEDState = CMD_STARTUP;
 /* USER CODE END 0 */
 
 /**
@@ -219,7 +217,7 @@ Error_Handler();
 
   /* Create the semaphores(s) */
   /* creation of uartRxSem */
-  uartRxSemHandle = osSemaphoreNew(1, 1, &uartRxSem_attributes);
+  uartRxSemHandle = osSemaphoreNew(1, 0, &uartRxSem_attributes);
 
   /* USER CODE BEGIN RTOS_SEMAPHORES */
   /* add semaphores, ... */
@@ -268,7 +266,8 @@ Error_Handler();
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  UART_Print("Hi the board is Up\r\n");
+
+
   while (1)
   {
     /* USER CODE END WHILE */
@@ -389,15 +388,22 @@ static void MX_GPIO_Init(void)
   /* USER CODE END MX_GPIO_Init_1 */
 
   /* GPIO Ports Clock Enable */
+  __HAL_RCC_GPIOC_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
   __HAL_RCC_GPIOD_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0|GPIO_PIN_14, GPIO_PIN_RESET);
 
-  /*Configure GPIO pin : PB0 */
-  GPIO_InitStruct.Pin = GPIO_PIN_0;
+  /*Configure GPIO pin : PC13 */
+  GPIO_InitStruct.Pin = GPIO_PIN_13;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : PB0 PB14 */
+  GPIO_InitStruct.Pin = GPIO_PIN_0|GPIO_PIN_14;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
@@ -411,6 +417,10 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Alternate = GPIO_AF10_OTG1_FS;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
+  /* EXTI interrupt init*/
+  HAL_NVIC_SetPriority(EXTI15_10_IRQn, 5, 0);
+  HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
+
   /* USER CODE BEGIN MX_GPIO_Init_2 */
 
   /* USER CODE END MX_GPIO_Init_2 */
@@ -421,6 +431,16 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
     if(huart->Instance == USART3)
     {
+//    	systemReady++;
+//        if(systemReady<2)
+//        {
+//            // ✅ Ignore spurious bytes during startup
+//            // Just re-arm and discard
+//            HAL_UART_Receive_IT(&huart3, &rxChar, 1);
+//            return;
+//        }
+
+
         if(rxChar == '\n' || rxChar == '\r')
         {
             if(rxIndex > 0)  // ignore empty lines
@@ -448,9 +468,9 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
              }
          }
 
-
         // Re-arm for next byte
         HAL_UART_Receive_IT(&huart3, &rxChar, 1);
+
 
     }
 }
@@ -490,7 +510,7 @@ void StartUserInput(void *argument)
   {
 
 
-      	  	  UART_Print("Enter the command\r\n");
+      	  	  UART_Print("Enter the command1\r\n");
       		  osSemaphoreAcquire(uartRxSemHandle, osWaitForever);
 /*
       		  switch(rxChar){
@@ -503,26 +523,16 @@ void StartUserInput(void *argument)
 
       		  }
 */
-
-	          if(strncmp(rxBuff,"ON",2)==0){
-	              cmd = CMD_LED_ON;
-	          }
-
-	          else if(strncmp(rxBuff,"OFF",3)==0)
-	              cmd = CMD_LED_OFF;
-
-	          else if(strncmp(rxBuff,"SLOW",4)==0)
-	              cmd = CMD_SLOW_BLINK;
-
-	          else if(strncmp(rxBuff,"FAST",4)==0)
-	              cmd = CMD_FAST_BLINK;
-
-	          else{
-	        	  UART_Print("Error\r\n");
-	              continue;
-	          }
-	          osMessageQueuePut(ConsoleQueueHandle, &cmd, 0, osWaitForever);
+      		  cmd= ParseCommand(rxBuff);
 	          osMessageQueuePut(LEDQueueHandle, &cmd, 0, osWaitForever);
+	          osMessageQueuePut(ConsoleQueueHandle, &cmd, 0, osWaitForever);
+
+
+	          if(cmd == CMD_UNKNOWN ){
+	        	  UART_Print("Error\r\n");
+	        	  continue;
+	          }
+
   }
   /* USER CODE END StartUserInput */
 }
@@ -538,6 +548,7 @@ void StartConsole(void *argument)
 {
   /* USER CODE BEGIN StartConsole */
     char msg[120];
+    char buff[20];
     Command_t received;
   /* Infinite loop */
   for(;;)
@@ -547,15 +558,35 @@ void StartConsole(void *argument)
           lastCommand = received;
 
           uint32_t uptime = HAL_GetTick();
+// Stack size is now changed to 512  to print these messages since using an array. Remove this to decrease stack.
+          if(lastCommand==0)
+        	  strcpy(buff, "Initial State");
+          else if(lastCommand==1)
+        	  strcpy(buff, "Unknown State");
+          else if(lastCommand==2)
+        	  strcpy(buff, "LED_ON");
+          else if(lastCommand==3)
+        	  strcpy(buff, "LED_OFF");
+          else if(lastCommand==4)
+        	  strcpy(buff, "SLOW_BLINK");
+          else if(lastCommand==5)
+        	  strcpy(buff, "FAST_BLINK");
 
+
+          sprintf(msg,
+          "\r\nLast Command: %s\r\nLED State: %d\r\nUptime: %lu ms\r\n",
+          buff,
+          currentLEDState,
+          uptime);
+
+/*
           sprintf(msg,
           "\r\nLast Command: %d\r\nLED State: %d\r\nUptime: %lu ms\r\n",
           lastCommand,
           currentLEDState,
           uptime);
-
+*/
           UART_Print(msg);
-
 
       }
   }
@@ -581,8 +612,15 @@ void StartLED(void *argument)
       {
           currentLEDState = cmd;
 
+          if(cmd != CMD_UNKNOWN)
+          {
+        	  HAL_GPIO_WritePin(GPIOB,GPIO_PIN_14,GPIO_PIN_RESET); // red always off
+          }
+
           switch(cmd)
           {
+          	  case CMD_STARTUP:
+          		  break;
               case CMD_LED_ON:
                   blinkDelay = 0;
                   HAL_GPIO_WritePin(GPIOB,GPIO_PIN_0,GPIO_PIN_SET);
@@ -600,6 +638,12 @@ void StartLED(void *argument)
               case CMD_FAST_BLINK:
                   blinkDelay = 200;
                   break;
+
+              case CMD_UNKNOWN:
+            	  blinkDelay=0;
+                  HAL_GPIO_WritePin(GPIOB,GPIO_PIN_14,GPIO_PIN_SET);
+                  break;
+
           }
 
 
