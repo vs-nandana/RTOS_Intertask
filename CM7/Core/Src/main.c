@@ -64,28 +64,35 @@ osThreadId_t defaultTaskHandle;
 const osThreadAttr_t defaultTask_attributes = {
   .name = "defaultTask",
   .stack_size = 128 * 4,
-  .priority = (osPriority_t) osPriorityNormal,
+  .priority = (osPriority_t) osPriorityLow1,
 };
 /* Definitions for UserInput */
 osThreadId_t UserInputHandle;
 const osThreadAttr_t UserInput_attributes = {
   .name = "UserInput",
   .stack_size = 128 * 4,
-  .priority = (osPriority_t) osPriorityNormal,
+  .priority = (osPriority_t) osPriorityBelowNormal7,
 };
 /* Definitions for Console */
 osThreadId_t ConsoleHandle;
 const osThreadAttr_t Console_attributes = {
   .name = "Console",
   .stack_size = 512 * 4,
-  .priority = (osPriority_t) osPriorityNormal2,
+  .priority = (osPriority_t) osPriorityNormal1,
 };
 /* Definitions for LED */
 osThreadId_t LEDHandle;
 const osThreadAttr_t LED_attributes = {
   .name = "LED",
   .stack_size = 128 * 4,
-  .priority = (osPriority_t) osPriorityNormal3,
+  .priority = (osPriority_t) osPriorityNormal,
+};
+/* Definitions for ButtonTask */
+osThreadId_t ButtonTaskHandle;
+const osThreadAttr_t ButtonTask_attributes = {
+  .name = "ButtonTask",
+  .stack_size = 128 * 4,
+  .priority = (osPriority_t) osPriorityNormal4,
 };
 /* Definitions for ConsoleQueue */
 osMessageQueueId_t ConsoleQueueHandle;
@@ -96,6 +103,11 @@ const osMessageQueueAttr_t ConsoleQueue_attributes = {
 osMessageQueueId_t LEDQueueHandle;
 const osMessageQueueAttr_t LEDQueue_attributes = {
   .name = "LEDQueue"
+};
+/* Definitions for ButtonQueue */
+osMessageQueueId_t ButtonQueueHandle;
+const osMessageQueueAttr_t ButtonQueue_attributes = {
+  .name = "ButtonQueue"
 };
 /* Definitions for uartRxSem */
 osSemaphoreId_t uartRxSemHandle;
@@ -112,7 +124,7 @@ uint8_t rxIndex = 0;
 
 
 uint32_t blinkDelay = 0;
-volatile uint8_t systemReady = 0;
+volatile uint8_t flag=0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -123,6 +135,7 @@ void StartDefaultTask(void *argument);
 void StartUserInput(void *argument);
 void StartConsole(void *argument);
 void StartLED(void *argument);
+void StartButton(void *argument);
 
 /* USER CODE BEGIN PFP */
 
@@ -137,6 +150,7 @@ void UART_Print(char *msg)
 
 Command_t lastCommand = CMD_STARTUP;
 Command_t currentLEDState = CMD_STARTUP;
+
 /* USER CODE END 0 */
 
 /**
@@ -234,6 +248,9 @@ Error_Handler();
   /* creation of LEDQueue */
   LEDQueueHandle = osMessageQueueNew (8, sizeof(uint16_t), &LEDQueue_attributes);
 
+  /* creation of ButtonQueue */
+  ButtonQueueHandle = osMessageQueueNew (8, sizeof(uint16_t), &ButtonQueue_attributes);
+
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */
   /* USER CODE END RTOS_QUEUES */
@@ -250,6 +267,9 @@ Error_Handler();
 
   /* creation of LED */
   LEDHandle = osThreadNew(StartLED, NULL, &LED_attributes);
+
+  /* creation of ButtonTask */
+  ButtonTaskHandle = osThreadNew(StartButton, NULL, &ButtonTask_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -431,14 +451,6 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
     if(huart->Instance == USART3)
     {
-//    	systemReady++;
-//        if(systemReady<2)
-//        {
-//            // ✅ Ignore spurious bytes during startup
-//            // Just re-arm and discard
-//            HAL_UART_Receive_IT(&huart3, &rxChar, 1);
-//            return;
-//        }
 
 
         if(rxChar == '\n' || rxChar == '\r')
@@ -468,12 +480,32 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
              }
          }
 
-        // Re-arm for next byte
+
         HAL_UART_Receive_IT(&huart3, &rxChar, 1);
 
 
     }
 }
+
+
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
+{
+    if(GPIO_Pin == GPIO_PIN_13)
+    {
+
+        Command_t nextCmd = (currentLEDState + 1);
+
+// To skip unknown and startup command
+        if((nextCmd > CMD_FAST_BLINK) || (nextCmd == CMD_UNKNOWN))
+            nextCmd = CMD_LED_ON;
+
+// This is ISR friendly,since it has a 0 timeout.It wakesup the ButtonTask
+        osMessageQueuePut(ButtonQueueHandle,  &nextCmd, 0, 0);
+
+
+    }
+}
+
 /* USER CODE END 4 */
 
 /* USER CODE BEGIN Header_StartDefaultTask */
@@ -505,13 +537,13 @@ void StartUserInput(void *argument)
 {
   /* USER CODE BEGIN StartUserInput */
     Command_t cmd;
+
   /* Infinite loop */
   for(;;)
   {
+	  	UART_Print("Enter the command\r\n");
 
-
-      	  	  UART_Print("Enter the command1\r\n");
-      		  osSemaphoreAcquire(uartRxSemHandle, osWaitForever);
+      	  	 if(osSemaphoreAcquire(uartRxSemHandle, osWaitForever) == osOK){
 /*
       		  switch(rxChar){
 
@@ -523,15 +555,24 @@ void StartUserInput(void *argument)
 
       		  }
 */
-      		  cmd= ParseCommand(rxBuff);
-	          osMessageQueuePut(LEDQueueHandle, &cmd, 0, osWaitForever);
-	          osMessageQueuePut(ConsoleQueueHandle, &cmd, 0, osWaitForever);
+      	  		 if(flag==1){
+      	  			 flag=0;
+      	  			 continue;
+      	  		 }
+      	  		 else{
+
+				  cmd= ParseCommand(rxBuff);
+				  osMessageQueuePut(LEDQueueHandle, &cmd, 0, osWaitForever);
+				  osMessageQueuePut(ConsoleQueueHandle, &cmd, 0, osWaitForever);
 
 
-	          if(cmd == CMD_UNKNOWN ){
-	        	  UART_Print("Error\r\n");
-	        	  continue;
-	          }
+				  if(cmd == CMD_UNKNOWN ){
+					  UART_Print("Error\r\n");
+					  continue;
+				  }
+
+				  }
+      	  	   }
 
   }
   /* USER CODE END StartUserInput */
@@ -558,7 +599,9 @@ void StartConsole(void *argument)
           lastCommand = received;
 
           uint32_t uptime = HAL_GetTick();
+
 // Stack size is now changed to 512  to print these messages since using an array. Remove this to decrease stack.
+
           if(lastCommand==0)
         	  strcpy(buff, "Initial State");
           else if(lastCommand==1)
@@ -572,20 +615,12 @@ void StartConsole(void *argument)
           else if(lastCommand==5)
         	  strcpy(buff, "FAST_BLINK");
 
-
           sprintf(msg,
           "\r\nLast Command: %s\r\nLED State: %d\r\nUptime: %lu ms\r\n",
           buff,
           currentLEDState,
           uptime);
 
-/*
-          sprintf(msg,
-          "\r\nLast Command: %d\r\nLED State: %d\r\nUptime: %lu ms\r\n",
-          lastCommand,
-          currentLEDState,
-          uptime);
-*/
           UART_Print(msg);
 
       }
@@ -648,7 +683,6 @@ void StartLED(void *argument)
 
 
       }
-
       if(blinkDelay > 0)
       {
           HAL_GPIO_TogglePin(GPIOB,GPIO_PIN_0);
@@ -657,8 +691,47 @@ void StartLED(void *argument)
       else{
     	  osDelay(10);
       }
+
   }
   /* USER CODE END StartLED */
+}
+
+/* USER CODE BEGIN Header_StartButton */
+/**
+* @brief Function implementing the ButtonTask thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_StartButton */
+void StartButton(void *argument)
+{
+  /* USER CODE BEGIN StartButton */
+  /* Infinite loop */
+    Command_t cmd;
+    // Cycle to next command
+
+  char msg[60];
+  for(;;)
+  {
+
+        if(osMessageQueueGet(ButtonQueueHandle, &cmd, NULL, osWaitForever) == osOK)
+	        {
+
+				  sprintf(msg, "Button pressed → Command: %d\r\n", cmd);
+				  UART_Print(msg);
+
+			        osMessageQueuePut(ConsoleQueueHandle, &cmd, 0, 0);
+			        osMessageQueuePut(LEDQueueHandle,     &cmd, 0, 0);
+			        flag=1;
+			        if(osSemaphoreRelease( uartRxSemHandle)==osOK){UART_Print("Something\r\n");}
+
+
+	        }
+
+
+
+  }
+  /* USER CODE END StartButton */
 }
 
 /**
